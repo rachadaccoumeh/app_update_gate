@@ -79,6 +79,7 @@ class AppUpdateController {
   final _status = ValueNotifier<UpdateStatus>(UpdateStatus.idle);
   Timer? _timer;
   bool _started = false;
+  bool _disposed = false;
   UpdateDecision? _pendingForced;
 
   /// Observable check status. Listen (or hand the controller to `UpdateGate`)
@@ -104,6 +105,7 @@ class AppUpdateController {
   /// Releases a held forced result (see [ForcePresentation.onNextNavigation]).
   /// Called by `UpdateGateNavigatorObserver` on route changes.
   void notifyNavigation() {
+    if (_disposed) return;
     final pending = _pendingForced;
     if (pending == null) return;
     _pendingForced = null;
@@ -114,21 +116,27 @@ class AppUpdateController {
   Future<void> startUpdate() => _service.startUpdate();
 
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
     _timer?.cancel();
     _status.dispose();
   }
 
   Future<UpdateDecision> _check() async {
-    _status.value = UpdateStatus(
-      UpdateCheckState.checking,
-      _status.value.decision,
-    );
+    if (!_disposed) {
+      _status.value = UpdateStatus(
+        UpdateCheckState.checking,
+        _status.value.decision,
+      );
+    }
     final decision = await _service.evaluate();
     _publish(decision);
     return decision;
   }
 
   void _publish(UpdateDecision decision) {
+    // A check may resolve after the owning widget is gone — drop it silently.
+    if (_disposed) return;
     switch (decision.requirement) {
       case UpdateRequirement.forced:
         if (forcePresentation == ForcePresentation.onNextNavigation) {

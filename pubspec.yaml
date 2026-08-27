@@ -4,7 +4,7 @@ description: >-
   update policy source (REST API or any backend), guarded by a real
   store-availability check (Play In-App Update on Android, iTunes lookup on
   iOS) so users are never locked out of a build that is not actually live.
-version: 0.1.0
+version: 0.1.1
 
 environment:
   sdk: ^3.7.2

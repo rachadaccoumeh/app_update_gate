@@ -1,3 +1,9 @@
+## 0.1.1
+
+- Fix: disposing `AppUpdateController` while a check is in flight no longer
+  throws (`ValueNotifier used after being disposed`); the late result is
+  dropped silently.
+
 ## 0.1.0
 
 Initial release — the source-agnostic core extracted from
