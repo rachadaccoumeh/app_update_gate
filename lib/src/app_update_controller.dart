@@ -53,7 +53,11 @@ enum ForcePresentation {
 /// - on open: one check when [start] is called (default; disable with
 ///   `checkOnStart: false`),
 /// - periodic: every [recheckInterval] when set (`null` = never re-check),
-/// - manual: [checkForUpdate] at any time.
+/// - manual: [checkForUpdate] at any time, or [checkIfStale] (e.g. when the
+///   app returns to the foreground).
+///
+/// Overlapping triggers share one check: a check requested while another is
+/// in flight returns the in-flight result instead of starting a second one.
 ///
 /// The controller is passive until [start] is called (`UpdateGate` calls it
 /// on mount). Dispose it to cancel the periodic timer.
@@ -63,7 +67,9 @@ class AppUpdateController {
     this.checkOnStart = true,
     this.recheckInterval,
     this.forcePresentation = ForcePresentation.immediate,
-  }) : _service = service;
+    DateTime Function()? clock,
+  }) : _service = service,
+       _clock = clock ?? DateTime.now;
 
   final AppUpdateService _service;
 
@@ -76,8 +82,11 @@ class AppUpdateController {
   /// How a forced result reaches the UI.
   final ForcePresentation forcePresentation;
 
+  final DateTime Function() _clock;
   final _status = ValueNotifier<UpdateStatus>(UpdateStatus.idle);
   Timer? _timer;
+  Future<UpdateDecision>? _inFlight;
+  DateTime? _lastCheckedAt;
   bool _started = false;
   bool _disposed = false;
   UpdateDecision? _pendingForced;
@@ -102,6 +111,21 @@ class AppUpdateController {
   /// [status], honoring [forcePresentation]).
   Future<UpdateDecision> checkForUpdate() => _check();
 
+  /// When the last check completed, or null before the first one.
+  DateTime? get lastCheckedAt => _lastCheckedAt;
+
+  /// Runs a check only when none completed in the last [maxAge] (and none is
+  /// in flight). Returns the new decision, or null when the last one is fresh.
+  Future<UpdateDecision?> checkIfStale(Duration maxAge) async {
+    final last = _lastCheckedAt;
+    if (_inFlight == null &&
+        last != null &&
+        _clock().difference(last) < maxAge) {
+      return null;
+    }
+    return _check();
+  }
+
   /// Releases a held forced result (see [ForcePresentation.onNextNavigation]).
   /// Called by `UpdateGateNavigatorObserver` on route changes.
   void notifyNavigation() {
@@ -122,7 +146,10 @@ class AppUpdateController {
     _status.dispose();
   }
 
-  Future<UpdateDecision> _check() async {
+  Future<UpdateDecision> _check() =>
+      _inFlight ??= _runCheck().whenComplete(() => _inFlight = null);
+
+  Future<UpdateDecision> _runCheck() async {
     if (!_disposed) {
       _status.value = UpdateStatus(
         UpdateCheckState.checking,
@@ -130,6 +157,7 @@ class AppUpdateController {
       );
     }
     final decision = await _service.evaluate();
+    _lastCheckedAt = _clock();
     _publish(decision);
     return decision;
   }
@@ -144,10 +172,7 @@ class AppUpdateController {
           _pendingForced = decision;
           _status.value = UpdateStatus(UpdateCheckState.upToDate, decision);
         } else {
-          _status.value = UpdateStatus(
-            UpdateCheckState.updateForced,
-            decision,
-          );
+          _status.value = UpdateStatus(UpdateCheckState.updateForced, decision);
         }
       case UpdateRequirement.optional:
         _status.value = UpdateStatus(UpdateCheckState.updateOptional, decision);

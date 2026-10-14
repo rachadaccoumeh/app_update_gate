@@ -96,6 +96,13 @@ mistake can never force-block your users.
   (`null` = never).
 - `controller.checkForUpdate()` — manual one-time check, returns the
   `UpdateDecision`.
+- `UpdateGate(resumeRecheckAfter: Duration(...))` — re-check when the app
+  returns to the foreground and the last check is older than this
+  (`controller.checkIfStale(maxAge)` does the same by hand).
+
+Overlapping triggers share one check, and a re-check never changes the screen
+until it resolves: a forced screen stays up, and the blocking loader shows
+only before the first result.
 
 **How a forced result is shown** (`forcePresentation`):
 

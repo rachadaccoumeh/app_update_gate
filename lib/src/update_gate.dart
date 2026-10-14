@@ -29,6 +29,9 @@ enum UpdateGateMode {
 /// is all that is needed to run the configured triggers. Optional updates
 /// never block: observe [AppUpdateController.status] or use [onDecision] for
 /// a soft prompt.
+///
+/// A re-check never changes the screen until it resolves: a forced screen
+/// stays up and the blocking loader shows only before the first result.
 class UpdateGate extends StatefulWidget {
   const UpdateGate({
     super.key,
@@ -38,6 +41,7 @@ class UpdateGate extends StatefulWidget {
     this.mode = UpdateGateMode.nonBlocking,
     this.loadingBuilder,
     this.onDecision,
+    this.resumeRecheckAfter,
   });
 
   final AppUpdateController controller;
@@ -64,18 +68,35 @@ class UpdateGate extends StatefulWidget {
   /// analytics, etc.).
   final void Function(UpdateDecision decision)? onDecision;
 
+  /// Re-check when the app returns to the foreground and the last check is
+  /// older than this (see [AppUpdateController.checkIfStale]). `null` = no
+  /// foreground re-check.
+  final Duration? resumeRecheckAfter;
+
   @override
   State<UpdateGate> createState() => _UpdateGateState();
 }
 
-class _UpdateGateState extends State<UpdateGate> {
+class _UpdateGateState extends State<UpdateGate> with WidgetsBindingObserver {
   UpdateDecision? _lastReported;
+
+  /// The last non-`checking` status: what the gate shows while a re-check runs.
+  UpdateStatus? _settled;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.controller.status.addListener(_onStatus);
     widget.controller.start();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final maxAge = widget.resumeRecheckAfter;
+    if (state == AppLifecycleState.resumed && maxAge != null) {
+      widget.controller.checkIfStale(maxAge);
+    }
   }
 
   @override
@@ -83,6 +104,7 @@ class _UpdateGateState extends State<UpdateGate> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.status.removeListener(_onStatus);
+      _settled = null;
       widget.controller.status.addListener(_onStatus);
       widget.controller.start();
     }
@@ -90,12 +112,15 @@ class _UpdateGateState extends State<UpdateGate> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.controller.status.removeListener(_onStatus);
     super.dispose();
   }
 
   void _onStatus() {
-    final decision = widget.controller.status.value.decision;
+    final status = widget.controller.status.value;
+    if (status.state != UpdateCheckState.checking) _settled = status;
+    final decision = status.decision;
     if (decision != null && !identical(decision, _lastReported)) {
       _lastReported = decision;
       widget.onDecision?.call(decision);
@@ -104,6 +129,7 @@ class _UpdateGateState extends State<UpdateGate> {
   }
 
   bool get _waitingForFirstCheck {
+    if (_settled != null) return false;
     final state = widget.controller.status.value.state;
     return state == UpdateCheckState.checking ||
         (state == UpdateCheckState.idle && widget.controller.checkOnStart);
@@ -111,7 +137,10 @@ class _UpdateGateState extends State<UpdateGate> {
 
   @override
   Widget build(BuildContext context) {
-    final status = widget.controller.status.value;
+    final current = widget.controller.status.value;
+    final status = current.state == UpdateCheckState.checking
+        ? (_settled ?? current)
+        : current;
 
     if (status.state == UpdateCheckState.updateForced) {
       return widget.forcedBuilder(context, status.decision!);
